@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EcoSync — Volumetria</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0f1117;
+      color: #e2e8f0;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      padding: 24px 16px;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 480px;
+    }
+
+    /* Cabeçalho */
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+
+    header h1 {
+      font-size: 1.4em;
+      font-weight: 700;
+      color: #38bdf8;
+    }
+
+    header span {
+      font-size: 0.75em;
+      color: #64748b;
+    }
+
+    /* Card genérico */
+    .card {
+      background: #1e2130;
+      border-radius: 16px;
+      padding: 20px;
+      margin-bottom: 16px;
+      border: 1px solid #2d3748;
+    }
+
+    /* Nível principal */
+    .level-card {
+      text-align: center;
+      padding: 28px 20px;
+    }
+
+    .level-pct {
+      font-size: 4em;
+      font-weight: 800;
+      line-height: 1;
+      transition: color 0.5s;
+    }
+
+    .level-pct.status-normal   { color: #22c55e; }
+    .level-pct.status-baixo    { color: #f59e0b; }
+    .level-pct.status-critico  { color: #ef4444; }
+
+    .level-label {
+      font-size: 0.9em;
+      color: #64748b;
+      margin-top: 6px;
+      margin-bottom: 18px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    /* Barra de progresso */
+    .progress-bg {
+      background: #2d3748;
+      border-radius: 8px;
+      height: 16px;
+      overflow: hidden;
+      margin-bottom: 12px;
+    }
+
+    .progress-fill {
+      height: 100%;
+      border-radius: 8px;
+      transition: width 0.6s ease, background 0.5s;
+      background: #22c55e;
+    }
+
+    .progress-fill.status-baixo   { background: #f59e0b; }
+    .progress-fill.status-critico { background: #ef4444; }
+
+    .level-detail {
+      font-size: 0.85em;
+      color: #94a3b8;
+    }
+
+    /* Stats secundários */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .stat-item {
+      background: #252837;
+      border-radius: 12px;
+      padding: 14px;
+      text-align: center;
+    }
+
+    .stat-value {
+      font-size: 1.4em;
+      font-weight: 700;
+      color: #e2e8f0;
+    }
+
+    .stat-label {
+      font-size: 0.72em;
+      color: #64748b;
+      margin-top: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    /* Botões de comando */
+    .commands h2 {
+      font-size: 0.8em;
+      color: #64748b;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 12px;
+    }
+
+    .btn-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .btn {
+      padding: 14px;
+      border: none;
+      border-radius: 12px;
+      font-size: 0.9em;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.1s, opacity 0.2s;
+      color: white;
+    }
+
+    .btn:active  { transform: scale(0.96); }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .btn-calibrar-cheio  { background: #0ea5e9; }
+    .btn-calibrar-vazio  { background: #8b5cf6; }
+    .btn-reset           { background: #64748b; }
+    .btn-atualizar       { background: #22c55e; }
+
+    /* Barra de status */
+    .statusbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 0 4px;
+      font-size: 0.72em;
+      color: #475569;
+    }
+
+    .conn-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      display: inline-block;
+      margin-right: 5px;
+      background: #475569;
+    }
+
+    .conn-dot.online  { background: #22c55e; }
+    .conn-dot.offline { background: #ef4444; }
+
+    /* Toast */
+    .toast {
+      position: fixed;
+      bottom: 28px;
+      left: 50%;
+      transform: translateX(-50%) translateY(16px);
+      background: #22c55e;
+      color: white;
+      padding: 10px 22px;
+      border-radius: 20px;
+      font-size: 0.88em;
+      font-weight: 600;
+      opacity: 0;
+      transition: all 0.3s;
+      pointer-events: none;
+      white-space: nowrap;
+    }
+
+    .toast.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+
+    .toast.error { background: #ef4444; }
+  </style>
+</head>
+<body>
+
+<div class="container">
+
+  <header>
+    <h1>EcoSync — Volumetria</h1>
+    <span id="ip-label">–</span>
+  </header>
+
+  <!-- Nível principal -->
+  <div class="card level-card">
+    <div class="level-pct status-normal" id="pct-display">–%</div>
+    <div class="level-label" id="status-display">aguardando...</div>
+    <div class="progress-bg">
+      <div class="progress-fill" id="progress-bar" style="width: 0%"></div>
+    </div>
+    <div class="level-detail" id="liters-display">– L / – L</div>
+  </div>
+
+  <!-- Stats -->
+  <div class="card stats-grid">
+    <div class="stat-item">
+      <div class="stat-value" id="dist-display">– cm</div>
+      <div class="stat-label">Distância</div>
+    </div>
+    <div class="stat-item">
+      <div class="stat-value" id="liters-stat">– L</div>
+      <div class="stat-label">Volume atual</div>
+    </div>
+  </div>
+
+  <!-- Comandos -->
+  <div class="card commands">
+    <h2>Comandos</h2>
+    <div class="btn-grid">
+      <!--
+        ATENÇÃO: substitua as URLs abaixo pelas rotas reais da API
+        quando o professor fornecer os parâmetros.
+        Exemplo:
+          GET  /api/volumetria        → buscar dados
+          POST /api/cmd/calibrar_cheio → calibrar cheio
+          POST /api/cmd/calibrar_vazio → calibrar vazio
+      -->
+      <button class="btn btn-calibrar-cheio" onclick="sendCommand('calibrar_cheio', 'Calibrando CHEIO...')">
+        🔵 Calibrar CHEIO
+      </button>
+      <button class="btn btn-calibrar-vazio" onclick="sendCommand('calibrar_vazio', 'Calibrando VAZIO...')">
+        🟣 Calibrar VAZIO
+      </button>
+      <button class="btn btn-atualizar" onclick="fetchData()">
+        🔄 Atualizar
+      </button>
+      <button class="btn btn-reset" onclick="sendCommand('reset', 'Reiniciando...')">
+        ⚙️ Reset
+      </button>
+    </div>
+  </div>
+
+  <div class="statusbar">
+    <span>
+      <span class="conn-dot" id="conn-dot"></span>
+      <span id="conn-label">Offline</span>
+    </span>
+    <span id="last-update">Nunca atualizado</span>
+  </div>
+
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+  // ================================================================
+  // CONFIGURAÇÃO — substitua pela URL da API do professor
+  // ================================================================
+  const API_BASE = "http://IP_DO_SERVIDOR/api";  // <-- EDITE AQUI
+
+  // ================================================================
+  // FUNÇÕES AUXILIARES
+  // ================================================================
+  function showToast(msg, isError = false) {
+    const t = document.getElementById("toast");
+    t.textContent = msg;
+    t.className = "toast show" + (isError ? " error" : "");
+    setTimeout(() => t.className = "toast", 2800);
+  }
+
+  function setStatus(pct) {
+    if (pct > 60) return "normal";
+    if (pct > 25) return "baixo";
+    return "critico";
+  }
+
+  function setStatus(pct) {
+    if (pct > 60) return "normal";
+    if (pct > 25) return "baixo";
+    return "critico";
+  }
+
+  function setOnline(online) {
+    document.getElementById("conn-dot").className   = "conn-dot " + (online ? "online" : "offline");
+    document.getElementById("conn-label").textContent = online ? "Online" : "Offline";
+  }
+
+  // ================================================================
+  // BUSCAR DADOS DA API
+  // ================================================================
+  async function fetchData() {
+    try {
+      const res  = await fetch(API_BASE + "/volumetria", {
+        signal: AbortSignal.timeout(5000)
+      });
+      const data = await res.json();
+
+      /*
+       * Adapte os campos abaixo conforme o JSON que a API retornar.
+       * Esperado (igual ao que o ESP publica via MQTT):
+       * {
+       *   "nivel_pct":    73.5,
+       *   "volume_l":     14.7,
+       *   "distancia_cm": 12.3,
+       *   "status":       "NORMAL",
+       *   "max_litros":   20.0
+       * }
+       */
+      const pct    = data.nivel_pct    ?? 0;
+      const liters = data.volume_l     ?? 0;
+      const dist   = data.distancia_cm ?? 0;
+      const maxL   = data.max_litros   ?? 0;
+      const status = (data.status ?? "CRITICO").toLowerCase();
+
+      // Atualiza porcentagem
+      document.getElementById("pct-display").textContent = pct.toFixed(1) + "%";
+      document.getElementById("pct-display").className   = "level-pct status-" + status;
+
+      // Barra
+      const bar = document.getElementById("progress-bar");
+      bar.style.width = pct + "%";
+      bar.className   = "progress-fill status-" + status;
+
+      // Status label
+      const statusLabels = { normal: "Normal", baixo: "Baixo", critico: "Crítico" };
+      document.getElementById("status-display").textContent = statusLabels[status] ?? status;
+
+      // Litros
+      document.getElementById("liters-display").textContent = liters.toFixed(2) + " L / " + maxL.toFixed(1) + " L";
+      document.getElementById("liters-stat").textContent    = liters.toFixed(2) + " L";
+      document.getElementById("dist-display").textContent   = dist.toFixed(1) + " cm";
+
+      setOnline(true);
+      document.getElementById("last-update").textContent =
+        "Atualizado às " + new Date().toLocaleTimeString("pt-BR");
+
+    } catch (e) {
+      setOnline(false);
+    }
+  }
+
+  // ================================================================
+  // ENVIAR COMANDO
+  // ================================================================
+  async function sendCommand(cmd, msg) {
+    showToast(msg);
+    try {
+      /*
+       * Substitua a rota abaixo pela rota correta da API.
+       * O corpo JSON pode variar conforme o que o professor definir.
+       */
+      const res = await fetch(API_BASE + "/cmd/" + cmd, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ device: "volumetria" }),
+        signal: AbortSignal.timeout(5000)
+      });
+
+      if (!res.ok) throw new Error("Erro " + res.status);
+
+      showToast("Comando enviado!");
+      setTimeout(fetchData, 1000);
+
+    } catch (e) {
+      showToast("Falha ao enviar comando.", true);
+    }
+  }
+
+  // ================================================================
+  // INICIALIZAÇÃO
+  // ================================================================
+  fetchData();
+  setInterval(fetchData, 5000); // atualiza a cada 5 segundos
+</script>
+
+</body>
+</html>
