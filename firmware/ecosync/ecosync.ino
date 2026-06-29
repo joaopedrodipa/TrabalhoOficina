@@ -22,12 +22,20 @@
 #include <Adafruit_SSD1306.h>
 #include <EEPROM.h>
 #include <ESP8266WiFi.h>
+#include <ArduinoOTA.h>
+#include <ArduinoJson.h>
+#include <scMQTTLib.h>
 
 // ================================================================
 // CONFIGURAÇÃO — EDITE AQUI
 // ================================================================
 const char* WIFI_SSID     = "SEU_WIFI";
 const char* WIFI_PASSWORD = "SUA_SENHA";
+
+// Credenciais do broker MQTT (apisilas.ddns.net) — NÃO COMMITAR este arquivo
+// com as credenciais reais preenchidas, o repositório é público no GitHub!
+const char* MQTT_USUARIO = "SEU_USUARIO_API";
+const char* MQTT_SENHA   = "SUA_SENHA_API";
 
 // ================================================================
 // PINOS
@@ -47,6 +55,11 @@ const char* WIFI_PASSWORD = "SUA_SENHA";
 #define SCREEN_ADDRESS 0x3C
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+
+// ================================================================
+// MQTT
+// ================================================================
+scMQTTLib mqtt(MQTT_USUARIO, MQTT_SENHA);
 
 // ================================================================
 // EEPROM
@@ -83,6 +96,28 @@ void sendTrigger() {
   digitalWrite(TRIG_PIN, LOW);
 }
 
+// Filtro de mediana — descarta leituras isoladas corrompidas sem
+// bloquear o loop
+#define DIST_SAMPLES 3
+float distSamples[DIST_SAMPLES] = { 0, 0, 0 };
+int   distSampleIndex           = 0;
+int   distSampleCount           = 0;
+
+float medianDist() {
+  float sorted[DIST_SAMPLES];
+  memcpy(sorted, distSamples, distSampleCount * sizeof(float));
+  for (int i = 1; i < distSampleCount; i++) {
+    float key = sorted[i];
+    int j = i - 1;
+    while (j >= 0 && sorted[j] > key) {
+      sorted[j + 1] = sorted[j];
+      j--;
+    }
+    sorted[j + 1] = key;
+  }
+  return sorted[distSampleCount / 2];
+}
+
 // ================================================================
 // CALIBRAÇÃO
 // ================================================================
@@ -91,7 +126,7 @@ struct Calibration {
   float distEmpty;
   float maxLiters;
   bool  valid;
-} cal = { 5.0, 25.0, 10.0, false };
+} cal = { 5.0, 25.0, 2.0, false };
 
 void loadCalibration() {
   if (EEPROM.read(ADDR_VALID) != 0xAB) return;
@@ -171,7 +206,6 @@ void updateButtons() {
   unsigned long now = millis();
 
   bool aRaw = (digitalRead(BTN_A_PIN) == LOW);
-  btnA.pressed = false;
   if (aRaw && !btnA.lastState && (now - btnA.lastDebounce > 150)) {
     btnA.pressed      = true;
     btnA.lastDebounce = now;
@@ -179,7 +213,6 @@ void updateButtons() {
   btnA.lastState = aRaw;
 
   bool bRaw = (digitalRead(BTN_B_PIN) == LOW);
-  btnB.pressed = false;
   if (bRaw && !btnB.lastState && (now - btnB.lastDebounce > 150)) {
     btnB.pressed      = true;
     btnB.lastDebounce = now;
@@ -195,19 +228,23 @@ unsigned long lastMqttPub     = 0;
 unsigned long lastDisplayDraw = 0;
 
 // ================================================================
-// MQTT — PLACEHOLDER (aguardando biblioteca do professor)
+// MQTT
 // ================================================================
 void publishData() {
   if (WiFi.status() != WL_CONNECTED) return;
 
-  char payload[128];
-  snprintf(payload, sizeof(payload),
-    "{\"nivel_pct\":%.1f,\"volume_l\":%.2f,\"distancia_cm\":%.1f,\"status\":\"%s\"}",
-    currentPercent, currentLiters, currentDist, getStatus(currentPercent)
-  );
+  JsonDocument doc;
+  doc["nivel_pct"]    = currentPercent;
+  doc["volume_l"]     = currentLiters;
+  doc["distancia_cm"] = currentDist;
+  doc["status"]       = getStatus(currentPercent);
+  doc["max_litros"]   = cal.maxLiters;
+
+  String payload;
+  serializeJson(doc, payload);
 
   Serial.println(payload);
-  // TODO: mqtt.publish("ecosync/volumetria", payload);
+  mqtt.enviarJSON(payload);
 }
 
 // ================================================================
@@ -323,7 +360,7 @@ void drawConfigLiters() {
 
   display.setTextSize(1);
   display.setCursor(0, 55);
-  display.print("[A]+0.5L  [B]Salvar");
+  display.print("[A]+0.2L  [B]Salvar");
 
   display.display();
 }
@@ -381,16 +418,38 @@ void setup() {
   if (WiFi.status() == WL_CONNECTED) {
     Serial.print("IP: ");
     Serial.println(WiFi.localIP());
+
+    ArduinoOTA.setHostname("ecosync-volumetria");
+    ArduinoOTA.begin();
   }
 
-  // TODO: inicializar biblioteca MQTT aqui
+  mqtt.iniciar();
 }
 
 // ================================================================
 // LOOP PRINCIPAL
 // ================================================================
 void loop() {
-  // TODO: chamar mqtt.loop() aqui quando a biblioteca chegar
+  ArduinoOTA.handle();
+  mqtt.manterConexao();
+
+  if (mqtt.temComando()) {
+    String cmd = mqtt.obterComando();
+    Serial.print("Comando recebido: ");
+    Serial.println(cmd);
+
+    if (cmd == "calibrar_cheio") {
+      cal.distFull = currentDist;
+      saveCalibration();
+    } else if (cmd == "calibrar_vazio") {
+      cal.distEmpty = currentDist;
+      saveCalibration();
+    } else if (cmd == "reset") {
+      cal.valid = false;
+      EEPROM.write(ADDR_VALID, 0x00);
+      EEPROM.commit();
+    }
+  }
 
   updateButtons();
 
@@ -402,10 +461,20 @@ void loop() {
   }
 
   if (echoReady) {
-    echoReady       = false;
-    currentDist     = (echoDuration / 2.0) * 0.0343;
-    currentPercent  = calcPercent(currentDist);
-    currentLiters   = cal.maxLiters * currentPercent / 100.0;
+    echoReady  = false;
+    float dist = (echoDuration / 2.0) * 0.0343;
+
+    // Faixa válida para recipientes pequenos (1-2L) — rejeita ecos
+    // corrompidos/sem retorno em vez de aceitar qualquer leitura
+    if (dist >= 2.0 && dist <= 40.0) {
+      distSamples[distSampleIndex] = dist;
+      distSampleIndex = (distSampleIndex + 1) % DIST_SAMPLES;
+      if (distSampleCount < DIST_SAMPLES) distSampleCount++;
+
+      currentDist     = medianDist();
+      currentPercent  = calcPercent(currentDist);
+      currentLiters   = cal.maxLiters * currentPercent / 100.0;
+    }
   }
 
   if (now - lastMqttPub >= 5000) {
@@ -451,8 +520,8 @@ void loop() {
 
       case S_CONFIG_LITERS:
         if (btnA.pressed) {
-          configLitersTemp += 0.5;
-          if (configLitersTemp > 500.0) configLitersTemp = 0.5;
+          configLitersTemp += 0.2;
+          if (configLitersTemp > 2.0) configLitersTemp = 0.2;
         }
         if (btnB.pressed) {
           cal.maxLiters = configLitersTemp;
@@ -462,5 +531,8 @@ void loop() {
         drawConfigLiters();
         break;
     }
+
+    btnA.pressed = false;
+    btnB.pressed = false;
   }
 }

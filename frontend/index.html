@@ -283,9 +283,10 @@
 
 <script>
   // ================================================================
-  // CONFIGURAÇÃO — substitua pela URL da API do professor
+  // CONFIGURAÇÃO — proxy local (resolve CORS, esconde a chave de API)
+  // Antes de usar, rode: node proxy-server.js
   // ================================================================
-  const API_BASE = "http://IP_DO_SERVIDOR/api";  // <-- EDITE AQUI
+  const API_BASE = "http://localhost:3001";
 
   // ================================================================
   // FUNÇÕES AUXILIARES
@@ -295,12 +296,6 @@
     t.textContent = msg;
     t.className = "toast show" + (isError ? " error" : "");
     setTimeout(() => t.className = "toast", 2800);
-  }
-
-  function setStatus(pct) {
-    if (pct > 60) return "normal";
-    if (pct > 25) return "baixo";
-    return "critico";
   }
 
   function setStatus(pct) {
@@ -319,20 +314,29 @@
   // ================================================================
   async function fetchData() {
     try {
-      const res  = await fetch(API_BASE + "/volumetria", {
-        signal: AbortSignal.timeout(5000)
-      });
-      const data = await res.json();
+      const url = `${API_BASE}/telemetria?limite=1`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+
+      // A API retorna uma LISTA ordenada do mais recente pro mais antigo —
+      // confirmado pelos timestamps (list[0] = mais novo).
+      const list = await res.json();
+
+      if (!Array.isArray(list) || list.length === 0) {
+        setOnline(false);
+        return;
+      }
+
+      // O registro vem como { timestamp, topico, payload } — "payload" é uma
+      // STRING JSON (escapada), precisa de JSON.parse() pra virar objeto.
+      const data = JSON.parse(list[0].payload);
 
       /*
-       * Adapte os campos abaixo conforme o JSON que a API retornar.
-       * Esperado (igual ao que o ESP publica via MQTT):
+       * Campos esperados (iguais ao que o ESP publica via MQTT):
        * {
        *   "nivel_pct":    73.5,
        *   "volume_l":     14.7,
        *   "distancia_cm": 12.3,
-       *   "status":       "NORMAL",
-       *   "max_litros":   20.0
+       *   "status":       "NORMAL"
        * }
        */
       const pct    = data.nivel_pct    ?? 0;
@@ -374,14 +378,11 @@
   async function sendCommand(cmd, msg) {
     showToast(msg);
     try {
-      /*
-       * Substitua a rota abaixo pela rota correta da API.
-       * O corpo JSON pode variar conforme o que o professor definir.
-       */
-      const res = await fetch(API_BASE + "/cmd/" + cmd, {
+      const url = `${API_BASE}/comandos`;
+      const res = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ device: "volumetria" }),
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: "comando=" + encodeURIComponent(cmd),
         signal: AbortSignal.timeout(5000)
       });
 
